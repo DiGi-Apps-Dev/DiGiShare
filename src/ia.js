@@ -70,7 +70,95 @@ async function postJson(url, chiave, corpo, intestazioni = {}, timeout = 60000) 
   return r.json();
 }
 
-export function creaIa(env = process.env) {
+// ---- riassunto a voci (docs/protocollo-appuntamento.md): l'IA dà voci con un tipo, le sezioni le compone il codice ----
+export const TIPI_VOCE = ['fatto', 'decisione', 'dato', 'azione', 'fatta', 'sospeso', 'pendenza', 'prossimo'];
+const VOCI_APERTE = ['azione', 'sospeso', 'pendenza', 'prossimo'];
+const PESO_APERTA = { pendenza: 3, prossimo: 3, sospeso: 2, azione: 1 };
+const norma = (x) => String(x ?? '').toLowerCase().replace(/(\d)['’.](?=\d{3}\b)/g, '$1').replace(/\s+/g, ' ');
+const PAROLE_VUOTE = new Set('di a da in con su per tra fra il lo la i gli le un una uno e o che non si del della dei delle al alla sul sulla nel nella ha ho sono entro nuovo nuova nuove nuovi deve devo devono fare andare'.split(' '));
+// Radici di quattro lettere: «verifica» e «verificare», «pagata» e «pagamento» sono la stessa cosa.
+const radici = (x) => new Set((norma(x).match(/[\p{L}\d'.,]{3,}/gu) || []).map((w) => w.replace(/[.,]+$/, '')).filter((w) => !PAROLE_VUOTE.has(w)).map((w) => w.slice(0, 4)));
+const inComune = (a, b) => { const ra = radici(a); const rb = radici(b); const n = [...ra].filter((w) => rb.has(w)).length; return { n, quota: n / Math.max(1, Math.min(ra.size, rb.size)) }; };
+const stessaCosa = (a, b, quota) => { const c = inComune(a, b); return c.n >= 2 && c.quota >= quota; };
+const senzaPunto = (x) => String(x).replace(/[.\s]+$/, '');
+const RIFERIMENTI = /\b\d+(?:[.,]\d+)?\s*%|\b\d+(?:[.,']\d+)*\b|\b(?:lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica)\b|\b(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b|\b(?:prossima settimana|prossimo mese|domani|dopodomani)\b/gi;
+
+export function pulisciVoci(voci) {
+  const visti = new Set();
+  return (Array.isArray(voci) ? voci : []).filter((v) => TIPI_VOCE.includes(v?.tipo) && String(v.testo ?? '').trim())
+    .map((v) => ({ tipo: v.tipo, argomento: nomiGiusti(v.argomento ?? '').trim().slice(0, 80) || 'Generale', testo: nomiGiusti(v.testo).replace(/\s+/g, ' ').trim().slice(0, 800), secondi: Math.max(0, Number(v.secondi) || 0) }))
+    .filter((v) => { const k = norma(v.testo); if (visti.has(k)) return false; visti.add(k); return true; });
+}
+// Ogni data, scadenza e cifra detta nella trascrizione. I numeri scritti a parole non si vedono.
+export function riferimentiDi(segmenti) {
+  const tutti = new Set();
+  for (const s of segmenti) for (const m of norma(s.traduzione || s.testo).match(RIFERIMENTI) || []) tutti.add(m.trim());
+  return [...tutti];
+}
+export function riferimentiMancanti(riferimenti, voci) {
+  const testo = norma(voci.map((v) => v.testo).join(' | '));
+  return riferimenti.filter((r) => !new RegExp(`(^|[^\\d])${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\d])`, 'i').test(testo));
+}
+const cifreDi = (x) => norma(x).match(/\b\d+(?:[.,]\d+)?\s*%|\b\d+(?:[.,]\d+)*\b/g)?.map((m) => m.trim()) || [];
+export const cifreSenzaDato = (voci) => riferimentiMancanti([...new Set(voci.filter((v) => v.tipo === 'decisione').flatMap((v) => cifreDi(v.testo)))], voci.filter((v) => v.tipo === 'dato'));
+// Le voci sulla stessa cosa diventano una: la più specifica decide la sezione (una fattura non pagata è una pendenza).
+export function unisciVoci(voci) {
+  const fuori = [];
+  // Una cosa fatta dopo il momento in cui era da fare non resta da fare: vale anche se il passaggio di controllo non ha risposto.
+  const fatte = voci.filter((v) => v.tipo === 'fatta');
+  for (const v of voci) {
+    if (v.tipo === 'azione' && fatte.some((f) => f.secondi >= v.secondi && stessaCosa(f.testo, v.testo, 0.5))) continue;
+    if (!VOCI_APERTE.includes(v.tipo)) { fuori.push({ ...v }); continue; }
+    const uguale = fuori.find((x) => VOCI_APERTE.includes(x.tipo) && stessaCosa(x.testo, v.testo, x.tipo === 'azione' && v.tipo === 'azione' ? 0.75 : 0.4));
+    if (!uguale) { fuori.push({ ...v }); continue; }
+    const vince = PESO_APERTA[v.tipo] > PESO_APERTA[uguale.tipo] ? v : uguale;
+    const perde = vince === v ? uguale : v;
+    const contenuta = inComune(vince.testo, perde.testo).quota === 1;
+    const lunga = vince.testo.length >= perde.testo.length ? vince.testo : perde.testo;
+    Object.assign(uguale, { tipo: vince.tipo, testo: contenuta ? lunga : `${senzaPunto(vince.testo)}. ${senzaPunto(perde.testo)}.`, secondi: Math.min(v.secondi, uguale.secondi) });
+  }
+  // Una data rimasta da sola («settembre») torna nella voce a cui appartiene.
+  return fuori.filter((d) => {
+    if (d.tipo !== 'dato' || /\d/.test(d.testo)) return true;
+    const casa = fuori.find((x) => x !== d && x.tipo !== 'dato' && x.tipo !== 'fatto' && stessaCosa(x.testo, d.testo, 0.4));
+    if (!casa) return true;
+    casa.testo = `${senzaPunto(casa.testo)} (${d.testo.split(':').pop().trim()})`;
+    return false;
+  });
+}
+// La cifra che risulta da una decisione si chiama «finale», mai «proposta».
+export function cifreFinali(voci) {
+  const decise = new Set(voci.filter((v) => v.tipo === 'decisione').flatMap((v) => cifreDi(v.testo)));
+  return voci.map((v) => (v.tipo === 'dato' && cifreDi(v.testo).some((c) => decise.has(c)) ? { ...v, testo: v.testo.replace(/\b(?:propost|concordat)[oa]\b/gi, 'finale') } : v));
+}
+export function statoDegliArgomenti(voci) {
+  return [...new Set(voci.map((v) => v.argomento))].map((argomento) => {
+    const aperte = voci.filter((v) => v.argomento === argomento && VOCI_APERTE.includes(v.tipo));
+    return { argomento, aperto: aperte.length > 0, resta: aperte.map((v) => senzaPunto(v.testo)) };
+  });
+}
+// Stessa forma di sempre (titolo e righe): sito, app, email, esportazioni e Chiedi non cambiano.
+export function sezioniDaVoci(voci, inBreve = '') {
+  const riga = ({ testo, secondi }) => ({ testo, secondi });
+  const sezioni = [];
+  const stato = statoDegliArgomenti(voci).filter((s) => s.aperto).map((s) => ({ testo: `${s.argomento}: aperto, ${s.resta.length === 1 ? 'resta 1 cosa' : `restano ${s.resta.length} cose`}.`, secondi: 0 }));
+  const breve = [...(String(inBreve).trim() ? [{ testo: nomiGiusti(inBreve).replace(/\s+/g, ' ').trim().slice(0, 800), secondi: 0 }] : []), ...stato];
+  if (breve.length) sezioni.push({ titolo: 'In breve', righe: breve });
+  const nomi = [...new Set(voci.filter((v) => ['fatto', 'decisione', 'dato'].includes(v.tipo)).map((v) => v.argomento))];
+  for (const nome of nomi) {
+    for (const [tipo, titolo] of [['fatto', 'Cosa è emerso'], ['decisione', 'Decisioni'], ['dato', 'Dati e cifre']]) {
+      const righe = voci.filter((v) => v.argomento === nome && v.tipo === tipo).map(riga);
+      if (righe.length) sezioni.push({ titolo: `${nome}: ${titolo}`, righe });
+    }
+  }
+  for (const [tipo, titolo] of [['azione', 'Cose da fare'], ['fatta', 'Cose fatte'], ['sospeso', 'In sospeso'], ['pendenza', 'Pendenze'], ['prossimo', 'Prossimo passo']]) {
+    const righe = voci.filter((v) => v.tipo === tipo).map(riga);
+    if (righe.length) sezioni.push({ titolo, righe });
+  }
+  return sezioni;
+}
+
+export function creaIa(env = process.env, { completaProva = null } = {}) {
   const finta = env.IA_FINTA === '1';
   const fornitori = [];
   if (env.GEMINI_API_KEY) fornitori.push({ nome: 'Gemini', async run(prompt) {
@@ -109,6 +197,7 @@ export function creaIa(env = process.env) {
   }
 
   async function completa(prompt) {
+    if (completaProva) return completaProva(prompt);
     if (finta) return JSON.stringify({ descrizione: 'Come installare DiGiRec e vedere le prime opzioni.', capitoli: [{ secondi: 0, titolo: 'Benvenuto' }, { secondi: 4, titolo: 'Installazione' }, { secondi: 9, titolo: 'Opzioni' }] });
     const errori = [];
     for (const f of fornitori) {
@@ -140,7 +229,8 @@ export function creaIa(env = process.env) {
   const SEZIONI = ['Progetti', 'Punti discussi', 'Dati e cifre', 'Cose da fare', 'Cose fatte', 'In sospeso', 'Pendenze'];
   const conTempi = (segmenti) => segmenti.map((s) => `[${Math.round(Number(s.inizio) || 0)}] ${s.chi && s.chi !== 'Voce' ? `${s.chi}: ` : ''}${s.traduzione || s.testo}`).join('\n');
 
-    async function riassumiAppuntamento(segmenti, titolo, durata, contesto = {}) {
+  // Il metodo di prima, a sezioni fisse: è la riserva se il metodo a voci non riesce.
+  async function riassuntoASezioni(segmenti, titolo, durata, contesto = {}) {
     if (finta) return { titolo: 'Rinnovo polizza', tipo: 'Colloquio', sezioni: [{ titolo: 'Punti discussi', righe: [{ testo: 'Franchigia portata a CHF 300.', secondi: 4 }] }, { titolo: 'Cose da fare', righe: [{ testo: 'Marco: inviare il contratto.', secondi: 9 }] }] };
     const testo = conTempi(segmenti);
     // Le azioni concrete stanno in Cose da fare anche quando riguardano un progetto: anche se il progetto è nominato.
@@ -154,6 +244,67 @@ export function creaIa(env = process.env) {
     }).filter((x) => x.righe.length);
     if (!sezioni.length) throw new Error('Il riassunto è vuoto.');
     return { titolo: pulisci(d.titolo, 120), tipo: pulisci(d.tipo, 40), sezioni };
+  }
+
+    const regoleVoci = (contesto) => `Ogni voce è un oggetto {"tipo":"...","argomento":"...","testo":"...","secondi":0} e ha un tipo, uno solo:
+- fatto: un fatto o un'opinione venuti fuori. Senza cifre, senza azioni, senza decisioni.
+- decisione: una scelta presa davvero fra più possibilità. Può citare la sua cifra, che ha comunque anche la sua voce dato. La cifra che risulta da una decisione si chiama «finale», mai «proposta» (per esempio «Premio finale: 100 franchi»). Un'azione da compiere non è una decisione.
+- dato: una sola cifra, data o scadenza, con il suo nome giusto che dica a cosa si riferisce. Ogni numero detto ha la sua voce dato.
+- azione: qualcosa ancora da fare, con chi e per quando se è stato detto.
+- fatta: qualcosa già fatto o concluso. Se chi parla dice che una cosa è fatta, è fatta anche se prima era da fare.
+- sospeso: aspetta una risposta o una scelta non ancora presa, con il motivo e la data se detti.
+- pendenza: un debito, un pagamento, un documento o un impegno dovuto da altri o verso altri, con importo e scadenza se detti.
+- prossimo: il prossimo appuntamento o contatto, con giorno e ora.
+Ogni informazione sta in una voce sola: non scrivere la stessa cosa con due tipi. Una fattura o un debito da controllare è una sola voce pendenza, con importo e scadenza nella stessa voce.
+argomento: il nome del progetto, della pratica o del tema, preso dal discorso. Stesso argomento, stesso nome identico.
+secondi: il secondo in cui se ne parla, preso dalla trascrizione.
+Non inventare niente: se un nome o una cifra non si capisce, dillo. Nomi propri, da scrivere esatti: ${NOMI_PROPRI}. La trascrizione può storpiarli: se dal discorso è chiaro quale nome è, scrivilo giusto.
+${righeContesto(contesto)}${lingua(contesto)}, frasi brevi, niente commenti e niente emoji.`;
+  const chiediVoci = async (prompt) => { const d = estraiJson(await completa(prompt)); return Array.isArray(d) ? d : d.voci; };
+  // Un servizio occupato spesso torna dopo poco: i passaggi di rifinitura ci riprovano una volta.
+  const conRiprova = async (lavoro) => { try { return await lavoro(); } catch { await new Promise((r) => setTimeout(r, env.IA_ATTESA_RIPROVA ? Number(env.IA_ATTESA_RIPROVA) : 20000)); return lavoro(); } };
+
+  async function riassumiAppuntamento(segmenti, titolo, durata, contesto = {}) {
+    if (finta && !completaProva) return riassuntoASezioni(segmenti, titolo, durata, contesto);
+    const testo = conTempi(segmenti).slice(0, 400000);
+    let voci;
+    try {
+      voci = pulisciVoci(await chiediVoci(`Ecco la trascrizione di un incontro (durata ${tempoBreve(durata || 0)}): ogni riga inizia con il secondo della registrazione.\n\n${testo}\n\nScomponila in voci. Non è una trascrizione accorciata: è un indice di lavoro, che vale per qualsiasi materia. Rispondi SOLO con un JSON così: {"voci":[...]}.\n${regoleVoci(contesto)}`));
+      if (!voci.length) throw new Error('nessuna voce');
+    } catch {
+      // Quota finita o risposta sbagliata: la nota esce lo stesso, col metodo di prima.
+      return riassuntoASezioni(segmenti, titolo, durata, contesto);
+    }
+    // I passaggi dopo migliorano e basta: se uno fallisce si tiene quello che c'è.
+    const rif = riferimentiDi(segmenti);
+    try {
+      const mancano = riferimentiMancanti(rif, voci);
+      if (mancano.length) voci = pulisciVoci([...voci, ...await conRiprova(() => chiediVoci(`Ecco la trascrizione di un incontro:\n\n${testo}\n\nEcco le voci già estratte:\n${JSON.stringify(voci)}\n\nQueste cifre e date sono nella trascrizione ma in nessuna voce: ${mancano.join(' | ')}.\nScrivi SOLO le voci per queste, ognuna con il suo tipo e la cifra o data scritta esatta come detta. Se una data completa una voce già estratta, riscrivi quella voce intera con la data dentro, con lo stesso tipo. Se è solo un conteggio detto per provare il microfono, non scrivere niente. Rispondi SOLO con un JSON così: {"voci":[...]}.\n${regoleVoci(contesto)}`))]);
+    } catch { /* restano le voci di prima */ }
+    try {
+      const senza = cifreSenzaDato(voci);
+      if (senza.length) voci = pulisciVoci([...voci, ...await conRiprova(() => chiediVoci(`Ecco la trascrizione di un incontro:\n\n${testo}\n\nEcco le voci già estratte:\n${JSON.stringify(voci)}\n\nQueste cifre compaiono nelle decisioni ma in nessuna voce dato: ${senza.join(' | ')}.\nScrivi SOLO una voce di tipo dato per ognuna, con il nome giusto che dica a cosa si riferisce. Rispondi SOLO con un JSON così: {"voci":[...]}.\n${regoleVoci(contesto)}`))]);
+    } catch { /* restano le voci di prima */ }
+    try {
+      const daControllare = voci.filter((v) => ['azione', 'fatta', 'sospeso', 'pendenza'].includes(v.tipo));
+      if (daControllare.length) {
+        const esito = await conRiprova(async () => estraiJson(await completa(`Ecco la trascrizione di un incontro:\n\n${testo}\n\nEcco le voci estratte, numerate:\n${daControllare.map((v, i) => `${i}: [${v.tipo}, secondo ${Math.round(v.secondi)}] ${v.testo}`).join('\n')}\n\nControllale sulla trascrizione. Rispondi SOLO con un JSON così: {"fatte":[{"numero":0,"secondi":0,"frase":"..."}],"non_compiti":[{"numero":0,"frase":"..."}],"doppioni":[[0,1]]}.\n- fatte: solo le voci azione per cui più avanti chi parla dice chiaramente di averle fatte. secondi e frase: dove lo dice, copiati dalla trascrizione. Se non lo dice, l'azione non va qui.\n- non_compiti: solo le voci azione che sono una battuta o un'indicazione al volo a chi è presente mentre si registra (per esempio «parla senza urlare»). frase: copiata dalla trascrizione. Tutto il resto che qualcuno dice di dover fare è un compito vero, anche se detto di sfuggita. Nel dubbio non segnalarla.\n- doppioni: coppie di voci dello stesso tipo che dicono la stessa identica cosa. Due azioni diverse sulla stessa cosa, come spegnere e riaccendere, non sono doppioni.`)));
+        const nelTesto = (f) => { const x = norma(f).slice(0, 30); return x && norma(testo).includes(x); };
+        const via = new Set();
+        for (const x of Array.isArray(esito.fatte) ? esito.fatte : []) { const v = daControllare[Number(x.numero)]; if (v?.tipo === 'azione' && Number(x.secondi) > v.secondi && nelTesto(x.frase)) via.add(v); }
+        for (const x of Array.isArray(esito.non_compiti) ? esito.non_compiti : []) { const v = daControllare[Number(x.numero)]; if (v?.tipo === 'azione' && nelTesto(x.frase)) via.add(v); }
+        for (const c of Array.isArray(esito.doppioni) ? esito.doppioni : []) { const [p, s] = [daControllare[Number(c?.[0])], daControllare[Number(c?.[1])]]; if (p && s && p !== s && p.tipo === s.tipo) via.add(p.testo.length >= s.testo.length ? s : p); }
+        voci = voci.filter((v) => !via.has(v));
+      }
+    } catch { /* restano le voci di prima */ }
+    voci = cifreFinali(unisciVoci(voci));
+    // In breve si scrive per ultimo, dalle voci rimaste.
+    let breve = {};
+    try {
+      breve = await conRiprova(async () => estraiJson(await completa(`Ecco le voci di lavoro di un incontro:\n${JSON.stringify(voci.map(({ tipo, argomento, testo: t }) => ({ tipo, argomento, testo: t })))}\n\nRispondi SOLO con un JSON così: {"titolo":"...","tipo":"...","in_breve":"..."}.\n- titolo: massimo 8 parole. tipo: colloquio, sopralluogo, riunione, telefonata o altro.\n- in_breve: due o tre frasi, solo da queste voci: di cosa si è parlato e a che punto è. Una cosa con una firma, un invio o una conferma ancora da fare non è conclusa.\n- ${lingua(contesto)}, niente commenti e niente emoji.`)));
+    } catch { /* senza In breve la nota vale lo stesso */ }
+    const pulisci = (t, n) => nomiGiusti(t).replace(/\s+/g, ' ').trim().slice(0, n);
+    return { titolo: pulisci(breve.titolo, 120), tipo: pulisci(breve.tipo, 40), sezioni: sezioniDaVoci(voci, breve.in_breve) };
   }
 
   async function titoloBreve(segmenti) {

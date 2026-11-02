@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { authenticator } from 'otplib';
-import { nomiGiusti, promptWhisper, righeContesto, lingua } from '../src/ia.js';
+import { nomiGiusti, promptWhisper, righeContesto, lingua, creaIa, sezioniDaVoci, riferimentiDi, riferimentiMancanti, unisciVoci, cifreFinali, statoDegliArgomenti } from '../src/ia.js';
 import { apriDb, oraRegistrazione } from '../src/db.js';
 import { creaNote } from '../src/note.js';
 
@@ -312,4 +312,84 @@ test('cestino ed eliminazione tolgono anche la nota', async () => {
   assert.equal((await chiama(`/api/file/${id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await chiama(`/api/file/${id}/definitivo`, { method: 'DELETE' })).status, 200);
   assert.equal((await chiama(`/api/note/${id}`)).status, 404);
+});
+
+// ---- riassunto a voci ----
+const voce = (tipo, argomento, testo, secondi = 1) => ({ tipo, argomento, testo, secondi });
+
+test('le sezioni le compone il codice dal tipo: ogni voce in un posto solo', () => {
+  const s = sezioniDaVoci([voce('fatto', 'Polizza', 'Il cliente trova caro il rinnovo'), voce('decisione', 'Polizza', 'Franchigia a 1000'), voce('dato', 'Polizza', 'Premio finale: 1090'), voce('dato', 'KDP', 'ACOS: 38%'), voce('azione', 'Polizza', 'Inviare il contratto'), voce('fatta', 'KDP', 'Riscritta la descrizione'), voce('prossimo', 'Polizza', 'Firma il 18 novembre')], 'Due argomenti.');
+  assert.deepEqual(s.map((x) => x.titolo), ['In breve', 'Polizza: Cosa è emerso', 'Polizza: Decisioni', 'Polizza: Dati e cifre', 'KDP: Dati e cifre', 'Cose da fare', 'Cose fatte', 'Prossimo passo']);
+  assert.equal(s[0].righe[1].testo, 'Polizza: aperto, restano 2 cose.');
+  assert.equal(s[0].righe.length, 2);
+});
+
+test('cifre e date mancanti: il controllo le trova, comprese quelle coi separatori', () => {
+  const seg = [{ testo: "Il premio è 1'240 franchi, scade il 15 dicembre, ACOS al 38%, ne parliamo la prossima settimana." }];
+  const rif = riferimentiDi(seg);
+  assert.deepEqual(riferimentiMancanti(rif, [voce('dato', 'A', 'Premio: 1240 franchi'), voce('dato', 'A', 'ACOS: 38%')]).sort(), ['15', 'dicembre', 'prossima settimana'].sort());
+  assert.deepEqual(riferimentiMancanti(['5'], [voce('dato', 'A', 'Costo: 15')]), ['5']);
+});
+
+test('le voci sulla stessa cosa si uniscono e la più specifica decide la sezione', () => {
+  const v = unisciVoci([voce('sospeso', 'A', 'Verifica pagamento fattura agosto entro la prossima settimana'), voce('pendenza', 'A', 'Fattura agosto non pagata: 85 franchi'), voce('azione', 'A', 'Mario deve comprare le scarpe'), voce('azione', 'A', 'Anna deve comprare la palla')]);
+  assert.equal(v.filter((x) => x.tipo === 'pendenza').length, 1);
+  assert.equal(v.filter((x) => x.tipo === 'sospeso').length, 0);
+  assert.match(v.find((x) => x.tipo === 'pendenza').testo, /85 franchi.*prossima settimana/);
+  assert.equal(v.filter((x) => x.tipo === 'azione').length, 2);
+});
+
+test('una cosa fatta dopo non resta da fare, anche senza il passaggio di controllo', () => {
+  const v = unisciVoci([voce('azione', 'A', 'Scattare una foto', 5), voce('fatta', 'A', 'Scattata una foto', 9), voce('azione', 'A', 'Mandare il contratto', 5)]);
+  assert.deepEqual(v.filter((x) => x.tipo === 'azione').map((x) => x.testo), ['Mandare il contratto']);
+});
+
+test('una data rimasta sola torna nella sua voce', () => {
+  const v = unisciVoci([voce('pendenza', 'A', 'Rimborso grafico per file sbagliato: 40 euro'), voce('dato', 'A', 'Mese del file sbagliato: settembre')]);
+  assert.equal(v.length, 1);
+  assert.match(v[0].testo, /40 euro \(settembre\)/);
+});
+
+test('la cifra di una decisione si chiama finale, e aperto o chiuso lo decide il codice', () => {
+  const v = cifreFinali([voce('decisione', 'A', "Premio a 1'090 franchi"), voce('dato', 'A', "Premio proposto: 1'090 franchi"), voce('dato', 'A', "Premio iniziale: 1'240 franchi")]);
+  assert.equal(v[1].testo, "Premio finale: 1'090 franchi");
+  assert.equal(v[2].testo, "Premio iniziale: 1'240 franchi");
+  assert.deepEqual(statoDegliArgomenti([voce('fatta', 'A', 'x'), voce('azione', 'B', 'y')]).map((s) => s.aperto), [false, true]);
+});
+
+const SEG_PROVA = [{ inizio: 0, chi: 'Io', testo: 'Devo mandare il contratto. Devo fare la foto.' }, { inizio: 9, chi: 'Io', testo: 'Ho fatto la foto adesso.' }];
+function iaConRisposte(risposte) {
+  const chiamate = [];
+  return { chiamate, ia: creaIa({ IA_ATTESA_RIPROVA: '1' }, { completaProva: async (prompt) => { chiamate.push(prompt); const r = risposte(prompt, chiamate.length); if (r instanceof Error) throw r; return JSON.stringify(r); } }) };
+}
+
+test('il metodo a voci: quello che risulta fatto esce da Cose da fare, In breve è scritto per ultimo', async () => {
+  const { ia, chiamate } = iaConRisposte((p) => {
+    if (p.startsWith('Ecco le voci di lavoro')) return { titolo: 'Contratto', tipo: 'Colloquio', in_breve: 'Resta il contratto.' };
+    if (p.includes('Controllale sulla trascrizione')) return { fatte: [{ numero: 1, secondi: 9, frase: 'Ho fatto la foto adesso.' }, { numero: 0, secondi: 9, frase: 'frase inventata' }], non_compiti: [], doppioni: [] };
+    return { voci: [voce('azione', 'Lavoro', 'Mandare il contratto', 0), voce('azione', 'Lavoro', 'Fare la foto', 0)] };
+  });
+  const r = await ia.riassumiAppuntamento(SEG_PROVA, 'x', 12);
+  assert.equal(r.titolo, 'Contratto');
+  assert.deepEqual(r.sezioni.find((s) => s.titolo === 'Cose da fare').righe.map((x) => x.testo), ['Mandare il contratto']);
+  assert.equal(r.sezioni[0].titolo, 'In breve');
+  assert.ok(chiamate.at(-1).startsWith('Ecco le voci di lavoro'));
+});
+
+test('se il primo passaggio fallisce la nota esce col metodo di prima', async () => {
+  const { ia } = iaConRisposte((p) => (p.includes('Scomponila in voci') ? new Error('quota finita') : { titolo: 'Di prima', tipo: 'Colloquio', sezioni: [{ titolo: 'Punti discussi', righe: [{ testo: 'Un punto', secondi: 1 }] }] }));
+  const r = await ia.riassumiAppuntamento(SEG_PROVA, 'x', 12);
+  assert.deepEqual(r.sezioni.map((s) => s.titolo), ['Punti discussi']);
+});
+
+test('se fallisce un passaggio dopo il primo restano le voci, anche senza In breve', async () => {
+  const { ia } = iaConRisposte((p) => (p.includes('Scomponila in voci') ? { voci: [voce('azione', 'Lavoro', 'Mandare il contratto', 0)] } : new Error('quota finita')));
+  const r = await ia.riassumiAppuntamento(SEG_PROVA, 'x', 12);
+  assert.deepEqual(r.sezioni.map((s) => s.titolo), ['In breve', 'Cose da fare']);
+  assert.equal(r.tipo, '');
+});
+
+test('se nessun servizio risponde il riassunto dà errore, che note.js gestisce facendo uscire la nota', async () => {
+  const { ia } = iaConRisposte(() => new Error('spento'));
+  await assert.rejects(ia.riassumiAppuntamento(SEG_PROVA, 'x', 12));
 });

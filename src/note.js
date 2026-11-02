@@ -217,9 +217,12 @@ export function creaNote({ db, ia, posta, cartellaFile, cartellaAudio, cartellaP
       imposta(id, 'riassunto');
       let titolo = f.titolo;
       if (segmenti.length && n.genere === 'appuntamento') {
-        const r = await ia.riassumiAppuntamento(segmenti, f.titolo, durata, ctx);
-        db.prepare('UPDATE note SET riassunto = ?, tipo_incontro = ? WHERE file_id = ?').run(JSON.stringify(r.sezioni), r.tipo, id);
-        if (r.titolo && !titoloCambiato) titolo = r.titolo;
+        // Nessun servizio IA risponde: il testo c'è già, la nota esce senza riassunto e si può rifare dopo.
+        const r = await ia.riassumiAppuntamento(segmenti, f.titolo, durata, ctx).catch((err) => { registra('nota_riassunto_fallito', '', err.message.slice(0, 120)); return null; });
+        if (r) {
+          db.prepare('UPDATE note SET riassunto = ?, tipo_incontro = ? WHERE file_id = ?').run(JSON.stringify(r.sezioni), r.tipo, id);
+          if (r.titolo && !titoloCambiato) titolo = r.titolo;
+        }
       } else if (segmenti.length && !titoloCambiato) {
         titolo = (await ia.titoloBreve(segmenti).catch(() => '')) || titolo;
       }
