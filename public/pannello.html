@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#141317">
+<title>DiGiShare</title>
+<link rel="icon" href="/favicon.ico?v=5">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5">
+<link rel="manifest" href="/manifest.json?v=5">
+<link rel="stylesheet" href="/risorse/stile.css">
+</head>
+<body>
+<header class="barra">
+  <img class="logo" src="/logo/simbolo.svg?v=5" alt="" width="34" height="34">
+  <span class="marchio" aria-label="DiGiShare">D<span class="punto rosso">ı</span>G<span class="punto giallo">ı</span>Share</span>
+  <label class="cerca cerca-barra">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+    <input id="cerca" type="search" placeholder="Cerca tra i file…" aria-label="Cerca tra i file">
+  </label>
+  <span class="distanza"></span>
+  <button class="pulsante carica-barra" id="carica" type="button">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Carica
+  </button>
+  <a class="azione-barra" href="/impostazioni">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Impostazioni
+  </a>
+  <button class="azione-barra" id="esci" type="button">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 4H5v16h5M15 8l4 4-4 4M19 12H9"/></svg>Esci
+  </button>
+</header>
+
+<div class="sezioni" role="group" aria-label="Video o note">
+  <button type="button" id="sezione-video" aria-pressed="true">Video <b class="numerino" id="nuovi-video" hidden></b></button>
+  <button type="button" id="sezione-note" aria-pressed="false">Note <b class="numerino" id="nuove-note" hidden></b></button>
+</div>
+
+<div class="corpo con-categorie">
+  <nav class="categorie" aria-label="Categorie">
+    <h2>Categorie</h2>
+    <label class="ordine-categorie" id="ordine-categorie"><span>Ordine</span>
+      <select id="ordine-scelta" aria-label="Ordine delle categorie"><option value="manuale">Personalizzato</option><option value="alfabetico">Alfabetico</option><option value="recenti">Ultima modifica</option></select>
+    </label>
+    <ul id="categorie"></ul>
+    <form id="nuova-categoria" class="nuova-categoria">
+      <input id="nome-categoria" type="text" placeholder="Nuova categoria…" aria-label="Nome della nuova categoria" maxlength="60">
+      <button type="submit" class="pulsante piccolo">Aggiungi</button>
+    </form>
+  </nav>
+
+  <main class="contenuti">
+    <div class="comandi">
+      <h2 class="titolo-sezione" id="titolo-sezione">Tutti i file</h2>
+      <div class="vista" role="group" aria-label="Come mostrare i file">
+        <button type="button" id="vista-griglia" aria-pressed="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>Griglia
+        </button>
+        <button type="button" id="vista-elenco" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Elenco
+        </button>
+      </div>
+    </div>
+    <div class="intestazione-cestino" id="intestazione-cestino" hidden>
+      <p>I file nel cestino si cancellano da soli dopo <span id="giorni-cestino">30</span> giorni.</p>
+      <button type="button" class="pulsante" id="svuota-cestino">Svuota il cestino</button>
+    </div>
+    <div class="griglia" id="file"></div>
+  </main>
+
+  <aside class="colonna">
+    <section class="riquadro trascina" id="trascina">
+      <button class="pulsante carica-barra" id="carica-riquadro" type="button">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Carica
+      </button>
+    </section>
+
+    <section class="riquadro" id="sezione-lavori" hidden>
+      <h2>In caricamento</h2>
+      <div id="lavori"></div>
+    </section>
+
+    <section class="riquadro" id="sezione-sospesi" hidden>
+      <h2>Interrotti</h2>
+      <div id="sospesi"></div>
+    </section>
+
+    <section class="riquadro spazio">
+      <h2>Spazio usato</h2>
+      <p class="spazio-valore" id="spazio-usato">–</p>
+      <div class="misura"><i id="spazio-misura"></i></div>
+      <p class="piccolo" id="spazio-libero"></p>
+    </section>
+  </aside>
+</div>
+
+<input id="scegli" type="file" multiple hidden>
+<script src="/vendor/tus.min.js"></script>
+<script src="/risorse/comune.js"></script>
+<script src="/risorse/condividi.js"></script>
+<script src="/risorse/pannello.js"></script>
+</body>
+</html>

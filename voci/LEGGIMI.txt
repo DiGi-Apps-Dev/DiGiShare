@@ -1,0 +1,10 @@
+Riconoscimento della voce di chi registra (facoltativo). Nella trascrizione le frasi di chi registra compaiono come «Io».
+
+1. Da https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models scarica
+   3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx
+   e mettilo in questa cartella con il nome campplus.onnx
+2. Registra almeno 30 secondi della tua voce, da solo, e salvali qui come campione.wav (16 kHz, un canale).
+3. Nel file .env togli il # da VOCE_URL=http://digishare-voce:8796
+4. docker compose --profile voce up -d --build
+
+campione.wav è la tua voce: resta sul tuo server e non va mai nel repository.

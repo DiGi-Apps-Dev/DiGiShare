@@ -1,0 +1,9 @@
+node_modules/
+dati/
+dati-prova/
+backups/
+.env
+*.log
+bin/deep-filter
+voci/campione.wav
+voci/*.onnx

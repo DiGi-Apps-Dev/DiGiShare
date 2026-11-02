@@ -1,0 +1,17 @@
+node_modules
+dati
+dati-prova
+backups
+.env
+README.md
+immagini
+schermate
+test
+tools
+deploy
+assets/logo/bozze
+*.cmd
+*.log
+.git
+voci
+prova-voce
